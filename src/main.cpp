@@ -8,19 +8,27 @@
 #include <driver/adc.h>
 #include <EEPROM.h>
 #include <TimeLib.h>
+#include <CayenneLPPDecode.h>
+#include <ArduinoJson.h>
 
 
 #define DEBUG
 
 #ifdef DEBUG
-#define dprint(x)     Serial.print(x)
-#define dprintln(x)   Serial.println(x)
-#define dwrite(x)     Serial.write(x)
+#define dprint(x) Serial.print(x)
+#define dprintln(x) Serial.println(x)
+#define dwrite(x) Serial.write(x)
 #else
 #define dprint(x)
 #define dprintln(x)
 #define dwrite(x)
 #endif
+
+//Typedefs
+typedef union {
+    unsigned int value;
+    unsigned char byte[4];
+} uint2byte;
 
 
 /*****************************************************************************
@@ -92,8 +100,10 @@ unsigned int data_array_size = 0;
                                                     //Value in Address "2" is multiplied with Value in Address "3"
                                                     //e.g. "20" x "1" => 20
                                                     //or   "20" x "10" => 200
-unsigned int data_period_exceed_alarm = 0;
-unsigned int data_period_exceed_alarm_multiplicator = 0;
+
+#define EEPROM_BEGIN_WATER_EXCEED_LIMIT 2
+
+uint2byte data_period_exceed_alarm;
 
 //Debouncing the interrupt. 
 #define DEBOUNCE_TIME 250 //defaulting to 250ms debounce time
@@ -204,21 +214,27 @@ void EEPROM_put(int pos, int value) {
 // the exceed alarm is just needed with a bad data rate - otherwise it is ignored as we transmit frequently
 // enough.
 void parseDownstream(u1_t frame[255], u1_t databeg, u1_t dataLen) {
+    DynamicJsonDocument jsonBuffer(256);
+    CayenneLPPDecode lppd;
+    bool modify = false;
 
-    dprintln(dataLen);
-    if (dataLen = 2) {
-        dprintln(frame[databeg]);
-        dprintln(frame[databeg+1]);
-        unsigned int tmp = ( frame[databeg] << 8 ) + frame[databeg+1];
-        dprintln(tmp);
-        data_period_exceed_alarm_multiplicator = 1;
-        while (tmp > 254) {
-            data_period_exceed_alarm_multiplicator *= 10;
-            tmp = tmp / data_period_exceed_alarm_multiplicator;
+    JsonObject root = jsonBuffer.to<JsonObject>();
+
+    lppd.write(frame+databeg, dataLen);
+
+    if (lppd.isValid()) {
+        if (root.containsKey("luminosity_0")) {
+            data_period_exceed_alarm.value = root["luminosity_0"];
+            EEPROM.write(EEPROM_BEGIN_WATER_EXCEED_LIMIT, data_period_exceed_alarm.byte[0]);
+            EEPROM.write(EEPROM_BEGIN_WATER_EXCEED_LIMIT + 1, data_period_exceed_alarm.byte[1]);
+            EEPROM.write(EEPROM_BEGIN_WATER_EXCEED_LIMIT + 2, data_period_exceed_alarm.byte[2]);
+            EEPROM.write(EEPROM_BEGIN_WATER_EXCEED_LIMIT + 3, data_period_exceed_alarm.byte[3]);
+            modify = true;
+            dprintln("Got Exceed Alarm Limit via Downstream:"); dprint(data_period_exceed_alarm.value); dprintln("]");
         }
-        data_period_exceed_alarm = tmp * data_period_exceed_alarm_multiplicator;
-        EEPROM_put(2, tmp);
-        EEPROM_put(3, data_period_exceed_alarm_multiplicator);
+        if (modify) {
+            EEPROM.commit();
+        }
     }
 }
 
@@ -371,9 +387,18 @@ void setup() {
      * Read in EEPROM with values from last run:
      *************************************************************************/
 
-    data_period_exceed_alarm = EEPROM_get(2, DATA_PERIOD_EXCEED_ALARM);
-    data_period_exceed_alarm_multiplicator = EEPROM_get(3, DATA_PERIOD_EXCEED_ALARM_MULTIPLICATOR);
-    data_period_exceed_alarm *= data_period_exceed_alarm_multiplicator;
+    data_period_exceed_alarm.byte[0] = EEPROM.read(EEPROM_BEGIN_WATER_EXCEED_LIMIT);
+    data_period_exceed_alarm.byte[1] = EEPROM.read(EEPROM_BEGIN_WATER_EXCEED_LIMIT + 1);
+    data_period_exceed_alarm.byte[2] = EEPROM.read(EEPROM_BEGIN_WATER_EXCEED_LIMIT + 2);
+    data_period_exceed_alarm.byte[3] = EEPROM.read(EEPROM_BEGIN_WATER_EXCEED_LIMIT + 3);
+
+    if (data_period_exceed_alarm.byte[0] == 0xFF 
+        && data_period_exceed_alarm.byte[1] == 0xFF 
+        && data_period_exceed_alarm.byte[2] == 0xFF 
+        && data_period_exceed_alarm.byte[3] == 0xFF) 
+    {
+        data_period_exceed_alarm.value = DATA_PERIOD_EXCEED_ALARM; 
+    }
 
 
     //Power savings: see https://www.mischianti.org/2021/03/06/esp32-practical-power-saving-manage-wifi-and-cpu-1/
@@ -438,7 +463,7 @@ void loop() {
         //Especially the first check prevents transfers of data without any need as zero measurements will be delayed until the array size is filled up till maximum
         //So if there is no flow at all the data will be transferred only every 5 minutes. With DR5 (SF7) we are allowed to transmit ~18 messages per hour on average 
         //(every three minutes) to fullfill the TTN fair usage policy. This change will allow us to do so if there is not that much flow most of the day. 
-        if ((array_counter >= data_array_size && data_count_sum != 0) || array_counter > DATA_ARRAY_SIZE || datatmp > DATA_PERIOD_EXCEED_ALARM )  {
+        if ((array_counter >= data_array_size && data_count_sum != 0) || array_counter > DATA_ARRAY_SIZE || datatmp > data_period_exceed_alarm.value )  {
             dprintln("Send data to gateway");
             do_send(&sendjob);
 
