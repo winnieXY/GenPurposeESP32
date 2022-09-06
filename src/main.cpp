@@ -443,7 +443,7 @@ void setup() {
 void loop() {
     unsigned long now = millis();
     if (data_fetch_time == 0 || now - data_fetch_time >= DATA_SUMMATION_PERIOD) {
-        dprintln("Get Data and transport it!");
+        dprintln("Get Data!");
 
         //Get data
         int datatmp = 0;
@@ -463,7 +463,7 @@ void loop() {
         //Especially the first check prevents transfers of data without any need as zero measurements will be delayed until the array size is filled up till maximum
         //So if there is no flow at all the data will be transferred only every 5 minutes. With DR5 (SF7) we are allowed to transmit ~18 messages per hour on average 
         //(every three minutes) to fullfill the TTN fair usage policy. This change will allow us to do so if there is not that much flow most of the day. 
-        if ((array_counter >= data_array_size && data_count_sum != 0) || array_counter > DATA_ARRAY_SIZE || datatmp > data_period_exceed_alarm.value )  {
+        if ((array_counter >= data_array_size && data_count_sum != 0) || array_counter >= DATA_ARRAY_SIZE || datatmp > data_period_exceed_alarm.value )  {
             dprintln("Send data to gateway");
             do_send(&sendjob);
 
